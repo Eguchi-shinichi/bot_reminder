@@ -1,5 +1,5 @@
 import requests_async
-import requests
+from requests.exceptions import ConnectTimeout
 
 import sqlite3
 import time
@@ -13,6 +13,15 @@ tasks = {}
 return_message_url = 'https://api.telegram.org/bot' + key.token + '/sendMessage'
 
 
+async def send_request(args):
+    while True:
+        try:
+            await requests_async.post(return_message_url, json=args, timeout=10)
+            break
+        except ConnectTimeout:
+            continue
+
+
 # update 以及获取用户信息
 async def get_updates(update_id):
     text_start = '欢迎使用！我可以定时给你发提醒哦！\n 使用 /help 来查看帮助'
@@ -24,7 +33,7 @@ async def get_updates(update_id):
             async_re_update = requests_async.post(url_update, json=args_update, timeout=70)
             data = (await async_re_update).json()
             print('data:', data)
-        except requests.exceptions.ConnectTimeout:
+        except ConnectTimeout:
             continue
         try:
             update_id = data['result'][0]['update_id'] + 1
@@ -48,20 +57,10 @@ async def get_updates(update_id):
             re_delete = re.match(re_str_delete, text)
             if re_start:
                 args_start = {'chat_id': chat_id, 'text': text_start}
-                while True:
-                    try:
-                        await requests_async.post(return_message_url, args_start, timeout=10)
-                        break
-                    except requests.exceptions.Timeout:
-                        continue
+                asyncio.create_task(send_request(args_start))
             elif re_help:
                 args_help = {'chat_id': chat_id, 'text': text_help}
-                while True:
-                    try:
-                        await requests_async.post(return_message_url, args_help, timeout=10)
-                        break
-                    except requests.exceptions.Timeout:
-                        continue
+                asyncio.create_task(send_request(args_help))
             elif re_list:
                 print('if/list...')
                 asyncio.create_task(async_re_list(chat_id))
@@ -90,12 +89,7 @@ async def async_re_list(chat_id):
 
     if not db_list:
         args_list = {'chat_id': chat_id, 'text': '还没有已经设置的提醒哦！'}
-        while True:
-            try:
-                await requests_async.post(return_message_url, args_list, timeout=10)
-                break
-            except requests.exceptions.Timeout:
-                continue
+        asyncio.create_task(send_request(args_list))
     else:
         print('db_list', db_list)
         list_text = ''
@@ -105,12 +99,7 @@ async def async_re_list(chat_id):
             list_text = list_text + '提醒信息：' + list_tuple[1] + '\n'
         args_list = {'chat_id': chat_id, 'text': list_text}
         print('args_list:', args_list)
-        while True:
-            try:
-                await requests_async.post(return_message_url, args_list, timeout=10)
-                break
-            except requests.exceptions.Timeout:
-                continue
+        asyncio.create_task(send_request(args_list))
 
 
 # /new
@@ -125,30 +114,19 @@ async def new(args):
     if not (re_groups[2] and re_groups[4]):
         # 发送用法信息
         args_new = {'chat_id': chat_id, 'text': text_new}
-        while True:
-            try:
-                await requests_async.post(return_message_url, json=args_new, timeout=10)
-                break
-            except requests.exceptions.ConnectTimeout:
-                continue
+        asyncio.create_task(send_request(args_new))
     else:
         # 存储
         interval = re_groups[2]
         message = re_groups[4]
         db = sqlite3.connect('定时提醒.db', isolation_level=None).cursor()
         id_ = str(uuid4())
-        db.execute('insert into information (id, userid, interval, message)'
-                   'values (?, ?, ?, ?)',
-                   (id_, chat_id, interval, message))
+        db.execute('insert into information (id, userid, interval, message, last_wakeup_time)'
+                   'values (?, ?, ?, ?, ?)',
+                   (id_, chat_id, interval, message, time.time()))
         args_new = {'chat_id': chat_id, 'text': '创建成功！'}
-        while True:
-            try:
-                await requests_async.post(return_message_url, json=args_new, timeout=10)
-                break
-            except requests.exceptions.ConnectTimeout:
-                continue
-        task_reminder = asyncio.create_task(
-            timing_reminder({'chat_id': chat_id, 'interval': interval, 'message': message}))
+        asyncio.create_task(send_request(args_new))
+        task_reminder = asyncio.create_task(timing_reminder(id_))
         tasks[id_] = task_reminder
 
 
@@ -162,12 +140,7 @@ async def delete(args):
     if not (re_groups[2] and re_groups[4]):
         # 发送用法信息
         args_delete = {'chat_id': chat_id, 'text': text_delete}
-        while True:
-            try:
-                await requests_async.post(return_message_url, json=args_delete, timeout=10)
-                break
-            except requests.exceptions.ConnectTimeout:
-                continue
+        asyncio.create_task(send_request(args_delete))
     else:
         # 删除
         db = sqlite3.connect('定时提醒.db', isolation_level=None).cursor()
@@ -182,53 +155,46 @@ async def delete(args):
             db.execute('delete from information where userid=? and interval=? and message=?',
                        (chat_id, re_groups[2], re_groups[4]))
             args_delete = {'chat_id': chat_id, 'text': '删除成功！'}
-            while True:
-                try:
-                    await requests_async.post(return_message_url, json=args_delete, timeout=10)
-                    break
-                except requests.exceptions.ConnectTimeout:
-                    continue
+            asyncio.create_task(send_request(args_delete))
         else:
             args_delete = {'chat_id': chat_id, 'text': '不存在该提醒哦！'}
-            while True:
-                try:
-                    await requests_async.post(return_message_url, json=args_delete, timeout=10)
-                    break
-                except requests.exceptions.ConnectTimeout:
-                    continue
+            asyncio.create_task(send_request(args_delete))
 
 
 # 提醒
-async def timing_reminder(args):
-    chat_id = args['chat_id']
-    interval = int(args['interval']) * 60
-    message = args['message']
+async def timing_reminder(id_):
+    db = sqlite3.connect('定时提醒.db', isolation_level=None).cursor()
+    information = list(db.execute('select userid, interval, message, last_wakeup_time from information '
+                                  'where id=?', (id_,)))[0]
+    print('information', information)
+    chat_id = information[0]
+    interval = information[1]*60
+    message = information[2]
+    last_wakeup_time = information[3]
+
     while True:
+        list_wake_up_time = list(db.execute('select last_wakeup_time from information where id=?', (id_,)))
+        if not list_wake_up_time:
+            break
+        last_wakeup_time = list_wake_up_time[0][0]
+        print(message, 'last time:', time.localtime(last_wakeup_time))
+        time_looking = last_wakeup_time + interval
         time_now = time.time()
-        time_looking = time_now + interval
-        await asyncio.sleep(interval)
-
+        time_sleep = time_looking - time_now
+        await asyncio.sleep(time_sleep)
         args = {'chat_id': chat_id, 'text': message}
-        while True:
-            try:
-                await requests_async.post(return_message_url, json=args, timeout=10)
-                break
-            except requests.exceptions.ConnectTimeout:
-                pass
-
-        time_now = time.time()
-        time_lag = time_looking - time_now
-        interval = interval + time_lag
+        await asyncio.create_task(send_request(args))
+        db.execute('update information set last_wakeup_time=? where id=?', (time.time(), id_))
 
 
 # 提醒 start
 async def timing_reminder_start():
     db = sqlite3.connect('定时提醒.db', isolation_level=None).cursor()
-    db_list = list(db.execute('select userid, interval, message, id from information'))
-    for db_tuple in db_list:
-        args = {'chat_id': db_tuple[0], 'interval': db_tuple[1], 'message': db_tuple[2]}
-        task_reminder = asyncio.create_task(timing_reminder(args))
-        tasks[db_tuple[3]] = task_reminder
+    id_list = list(db.execute('select id from information'))
+    for id_tuple in id_list:
+        id_ = id_tuple[0]
+        task_reminder = asyncio.create_task(timing_reminder(id_))
+        tasks[id_] = task_reminder
 
 
 # empty
@@ -241,12 +207,7 @@ async def empty(chat_id):
         task_reminder.cancel()
     db.execute('delete from information where userid=?', (chat_id,))
     args_empty = {'chat_id': chat_id, 'text': '清空成功'}
-    while True:
-        try:
-            await requests_async.post(return_message_url, json=args_empty, timeout=10)
-            break
-        except requests.exceptions.ConnectTimeout:
-            continue
+    asyncio.create_task(send_request(args_empty))
 
 
 async def main():

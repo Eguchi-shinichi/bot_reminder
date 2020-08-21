@@ -1,3 +1,5 @@
 /venv/
 key.py
 定时提醒.db
+.idea/
+__pycache__/
