@@ -25,7 +25,12 @@ async def send_request(args):
 # update 以及获取用户信息
 async def get_updates(update_id):
     text_start = '欢迎使用！我可以定时给你发提醒哦！\n 使用 /help 来查看帮助'
-    text_help = '/new - 创建一个新的提醒 \n/delete - 删除你不需要的提醒 \n/list - 查看已设置的提醒列表 \n/empty - 清空所有提醒'
+    text_help = '/new - 创建一个新的提醒 \n' \
+                '/delete - 删除你不需要的提醒 \n' \
+                '/list - 查看已设置的提醒列表 \n' \
+                '/pause - 暂停所有提醒 \n' \
+                '/restart - 恢复所有提醒 \n'\
+                '/empty - 清空所有提醒'
     while True:
         args_update = {'offset': update_id, 'timeout': 60}
         url_update = 'https://api.telegram.org/bot' + key.token + '/getUpdates'
@@ -43,6 +48,8 @@ async def get_updates(update_id):
         re_str_start = r'/start'
         re_str_help = r'/help'
         re_str_list = r'/list'
+        re_str_pause = r'/pause'
+        re_str_restart = r'/restart'
         re_str_empty = r'/empty'
         re_str_creat_new = r'(/new)( )?([0-9]+)?( )?(.+)?'
         re_str_delete = r'(/delete)( )?([0-9]+)?( )?(.+)?'
@@ -52,6 +59,8 @@ async def get_updates(update_id):
             re_start = re.match(re_str_start, text)
             re_help = re.match(re_str_help, text)
             re_list = re.match(re_str_list, text)
+            re_pause = re.match(re_str_pause, text)
+            re_restart = re.match(re_str_restart, text)
             re_empty = re.match(re_str_empty, text)
             re_creat_new = re.match(re_str_creat_new, text)
             re_delete = re.match(re_str_delete, text)
@@ -64,8 +73,12 @@ async def get_updates(update_id):
             elif re_list:
                 print('if/list...')
                 asyncio.create_task(async_re_list(chat_id))
+            elif re_pause:
+                asyncio.create_task(empty_and_pause(chat_id, 'pause'))
+            elif re_restart:
+                asyncio.create_task(restart(chat_id))
             elif re_empty:
-                asyncio.create_task(empty(chat_id))
+                asyncio.create_task(empty_and_pause(chat_id, 'empty'))
             elif re_creat_new:
                 print('if /new ...')
                 new_args = {'re': re_creat_new, 'chat_id': chat_id}
@@ -187,7 +200,34 @@ async def timing_reminder(id_):
         db.execute('update information set last_wakeup_time=? where id=?', (time.time(), id_))
 
 
-# 提醒 start
+#  清空和暂停 empty pause
+async def empty_and_pause(chat_id, keyword):
+    db = sqlite3.connect('定时提醒.db', isolation_level=None).cursor()
+    db_list = list(db.execute('select id from information where userid=?', (chat_id,)))
+    for db_tuple in db_list:
+        id_ = db_tuple[0]
+        task_reminder = tasks[id_]
+        task_reminder.cancel()
+    if keyword == 'empty':
+        db.execute('delete from information where userid=?', (chat_id,))
+        args_empty = {'chat_id': chat_id, 'text': '清空成功'}
+        asyncio.create_task(send_request(args_empty))
+    if keyword == 'pause':
+        args_pause = {'chat_id': chat_id, 'text': '已经暂停'}
+        asyncio.create_task(send_request(args_pause))
+
+
+# 重启 restart
+async def restart(chat_id):
+    db = sqlite3.connect('定时提醒.db', isolation_level=None).cursor()
+    db_list = list(db.execute('select id from information where userid=?', (chat_id,)))
+    for db_tuple in db_list:
+        id_ = db_tuple[0]
+        task_reminder = asyncio.create_task(timing_reminder(id_))
+        tasks[id_] = task_reminder
+
+
+# 程序重启 开启提醒
 async def timing_reminder_start():
     db = sqlite3.connect('定时提醒.db', isolation_level=None).cursor()
     id_list = list(db.execute('select id from information'))
@@ -195,19 +235,6 @@ async def timing_reminder_start():
         id_ = id_tuple[0]
         task_reminder = asyncio.create_task(timing_reminder(id_))
         tasks[id_] = task_reminder
-
-
-# empty
-async def empty(chat_id):
-    db = sqlite3.connect('定时提醒.db', isolation_level=None).cursor()
-    db_list = list(db.execute('select id from information where userid=?', (chat_id,)))
-    for db_tuple in db_list:
-        id_ = db_tuple[0]
-        task_reminder = tasks[id_]
-        task_reminder.cancel()
-    db.execute('delete from information where userid=?', (chat_id,))
-    args_empty = {'chat_id': chat_id, 'text': '清空成功'}
-    asyncio.create_task(send_request(args_empty))
 
 
 async def main():
